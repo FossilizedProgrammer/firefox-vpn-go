@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            binary: ffvpn-linux-amd64
+          - goos: linux
+            goarch: arm64
+            binary: ffvpn-linux-arm64
+          - goos: windows
+            goarch: amd64
+            binary: ffvpn-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            binary: ffvpn-windows-arm64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -trimpath -ldflags="-s -w" -o ${{ matrix.binary }} .
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.binary }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
