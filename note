@@ -1,0 +1,3 @@
+./ffvpn --session-token 8c1fba9d113711dd18e4c85a2202f9da6106dab9a4cc923408852a6f22fedfd2 --socks 127.0.0.1:2080
+
+سشن توکن داخل signedInUser.json هست این فایل هم آدرسش اینه /home/me/.mozilla/firefox/kod2jpxv.default-release
