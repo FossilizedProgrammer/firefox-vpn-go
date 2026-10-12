@@ -1,12 +1,19 @@
 **English** | [فارسی](README.fa.md) | [Русский](README.ru.md)
 
-# ffvpn — Go client for Firefox's built-in VPN
+# ffvpn — Unofficial Go client for Firefox's built-in VPN
 
 `ffvpn` is a standalone Go client for **IP Protection** (Firefox's built-in VPN,
 based on Mozilla VPN). It signs in to the Guardian service with your Firefox
 Account, obtains short-lived "ProxyPass" tokens, and exposes the same proxy
 edge Firefox uses as a **local SOCKS5 / HTTP CONNECT proxy** for any
 application.
+
+> 🔻 **Disclaimer:** `ffvpn` is an **unofficial, independent, community**
+> project. It is **not affiliated with, endorsed by, sponsored by, or
+> connected to** Mozilla or Firefox in any way. "Firefox", "Mozilla" and
+> "Mozilla VPN" are trademarks of their respective owners; this project is not
+> an official Mozilla product and receives no support from Mozilla. Use it at
+> your own risk.
 
 > ⚠️ **Server-side prerequisite (not bypassable):** Guardian only serves
 > accounts that have a Mozilla VPN subscription (`403` otherwise) and are in an
