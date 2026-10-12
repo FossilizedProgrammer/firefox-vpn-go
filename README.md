@@ -1,133 +1,137 @@
-[English](README.en.md) | **فارسی** | [Русский](README.ru.md)
+**English** | [فارسی](README.fa.md) | [Русский](README.ru.md)
 
-# ffvpn — کلاینت گو برای وی‌پی‌ان داخلی فایرفاکس
+# ffvpn — Go client for Firefox's built-in VPN
 
-`ffvpn` یک کلاینت مستقل به زبان Go برای **IP Protection** (وی‌پی‌ان داخلی مرورگر
-فایرفاکس، مبتنی بر Mozilla VPN) است. با حساب Firefox Account شما وارد سرویس
-Guardian می‌شود، توکن‌های کوتاه‌عمر «ProxyPass» می‌گیرد و تونل همان لبه‌ی
-پروکسی که فایرفاکس استفاده می‌کند را به‌صورت یک **پروکسی محلی SOCKS5 / HTTP
-CONNECT** در اختیار هر برنامه‌ای می‌گذارد.
+`ffvpn` is a standalone Go client for **IP Protection** (Firefox's built-in VPN,
+based on Mozilla VPN). It signs in to the Guardian service with your Firefox
+Account, obtains short-lived "ProxyPass" tokens, and exposes the same proxy
+edge Firefox uses as a **local SOCKS5 / HTTP CONNECT proxy** for any
+application.
 
-> ⚠️ **پیش‌نیاز سمت سرور (دور زدنی نیست):** Guardian سرویس را فقط به حساب‌هایی
-> که اشتراک Mozilla VPN دارند (`403` در غیر این صورت) و در منطقه‌ی مجاز هستند
-> (`451` برای مناطق غیرمجاز) سرویس می‌دهد. این چک‌ها همه سروری‌اند؛ این کلاینت
-> فقط همان درخواست‌هایی را می‌زند که خود فایرفاکس می‌زند. استفاده با کلاینت
-> غیررسمی می‌تواند مغایر شرایط استفاده از Mozilla VPN باشد و ریسک محدود شدن
-> حساب دارد.
+> ⚠️ **Server-side prerequisite (not bypassable):** Guardian only serves
+> accounts that have a Mozilla VPN subscription (`403` otherwise) and are in an
+> allowed region (`451` for disallowed regions). These checks are entirely
+> server-side; this client only makes the same requests Firefox itself makes.
+> Using an unofficial client may violate the Mozilla VPN Terms of Use and
+> carries a risk of account throttling or suspension.
 
-## معماری (برگرفته از سورس فایرفاکس 157)
+## Architecture (derived from Firefox 157 source)
 
 ```
-برنامه شما ──► پروکسی محلی SOCKS5/HTTP (127.0.0.1)
-                    │
-                    ▼
-        TLS + HTTP CONNECT با هدر
+Your app ──► local SOCKS5/HTTP proxy (127.0.0.1)
+                │
+                ▼
+        TLS + HTTP CONNECT with header
         Proxy-Authorization: Bearer <JWT>     ──►  *.m1.fastly-masque.net:2499
-                    │
-                    ▼
-            اینترنت (خروجی از کشور انتخابی)
+                │
+                ▼
+            Internet (egress from the selected country)
 ```
 
-- **لیست سرورها**: کالکشن عمومی Remote Settings با نام `vpn-serverlist`
-  (بدون احراز هویت).
-- **احراز هویت**: `sessionToken` حساب Firefox Account → توکن OAuth با
-  scopeهای `profile` و
-  `https://identity.mozilla.com/apps/vpn` (همان client_id دسکتاپ فایرفاکس:
-  `5882386c6d801776`) → API های Guardian روی `https://vpn.mozilla.org`
-  (مقدار pref واقعی فایرفاکس؛ دامنهٔ `.com` که در فال‌بک JS هست اصلاً رزولو
-  نمی‌شود):
-  - `POST /api/v1/fpn/activate` — فعال‌سازی و دریافت entitlement
-  - `GET  /api/v1/fpn/token` — دریافت JWT کوتاه‌عمر (چرخش ۲ دقیقه قبل از انقضا)
-  - هدرهای `X-Quota-*` — مصرف پهنای باند
-- **تونل**: در رکوردهای فعلی هیچ `protocols` ثبت نشده، پس طبق منطق
-  `IPPChannelFilter.sys.mjs` فایرفاکس، پروتکل پیش‌فرض همان CONNECT روی TLS است
-  و نام میزبان توسط لبه حل می‌شود (معادل `TRANSPARENT_PROXY_RESOLVES_HOST`).
+- **Server list**: a public Remote Settings collection named `vpn-serverlist`
+  (no authentication).
+- **Authentication**: the Firefox Account `sessionToken` → an OAuth token with
+  the `profile` and `https://identity.mozilla.com/apps/vpn` scopes (the same
+  desktop Firefox client_id: `5882386c6d801776`) → the Guardian APIs on
+  `https://vpn.mozilla.org` (the actual Firefox pref value; the `.com` domain
+  in the JS fallback never resolves at all):
+  - `POST /api/v1/fpn/activate` — activation and entitlement retrieval
+  - `GET  /api/v1/fpn/token` — retrieve a short-lived JWT (rotated 2 minutes
+    before expiry)
+  - `X-Quota-*` headers — bandwidth usage
+- **Tunnel**: current records register no `protocols`, so per Firefox's own
+  `IPPChannelFilter.sys.mjs` logic the default protocol is CONNECT over TLS
+  and the hostname is resolved by the edge (equivalent to
+  `TRANSPARENT_PROXY_RESOLVES_HOST`).
 
-## بیلد
+## Build
 
-نیازمندی: [Go](https://go.dev) 1.24+ (کلاینت Go خالص و بدون CGO است؛ هیچ
-وابستگی خارجی به‌جز خود Go لازم نیست).
+Requirement: [Go](https://go.dev) 1.24+ (the client is pure Go with no CGO;
+nothing beyond Go itself is required).
 
-بیلد روی خود سیستم‌عامل هدف:
+Build natively on the target OS:
 
 ```sh
-# لینوکس
+# Linux
 go build -o ffvpn .
 
-# ویندوز (PowerShell یا cmd)
+# Windows (PowerShell or cmd)
 go build -o ffvpn.exe .
 ```
 
-کراس‌کامپایل از لینوکس — چون هیچ وابستگی پلتفرمی و CGO در کار نیست، بدون
-هیچ تنظیم اضافه‌ای کار می‌کند:
+Cross-compile from Linux — since there are no platform dependencies and no
+CGO, it works with no extra setup:
 
 ```sh
-GOOS=linux   GOARCH=amd64 go build -o ffvpn .               # لینوکس x86-64
-GOOS=windows GOARCH=amd64 go build -o ffvpn.exe .           # ویندوز x86-64
-GOOS=windows GOARCH=arm64 go build -o ffvpn-arm64.exe .     # ویندوز on ARM
-GOOS=darwin  GOARCH=arm64 go build -o ffvpn-macos .         # مک (Apple Silicon)
+GOOS=linux   GOARCH=amd64 go build -o ffvpn .               # Linux x86-64
+GOOS=windows GOARCH=amd64 go build -o ffvpn.exe .           # Windows x86-64
+GOOS=windows GOARCH=arm64 go build -o ffvpn-arm64.exe .     # Windows on ARM
+GOOS=darwin  GOARCH=arm64 go build -o ffvpn-macos .         # Mac (Apple Silicon)
 ```
 
-## پلتفرم‌ها (ویندوز و مک)
+## Platforms (Windows and Mac)
 
-این کلاینت بعد از حذف حالت پروفایل، هیچ کد وابسته به سیستم‌عامل ندارد؛ روی
-ویندوز و مک هم دقیقاً همین رفتار را دارد (دستورهای بیلد در بخش «بیلد»).
-تفاوت‌های عملی در ویندوز:
+Since profile mode was removed, this client contains no OS-specific code at
+all; behavior on Windows and Mac is exactly the same (build commands are in
+the "Build" section). Practical differences on Windows:
 
-- مسیر `signedInUser.json`:
+- `signedInUser.json` path:
   `%APPDATA%\Mozilla\Firefox\Profiles\<profile>\signedInUser.json`
-  (در مک: `~/Library/Application Support/Firefox/Profiles/<profile>/`). استخراج
-  توکن در PowerShell، بدون نیاز به jq:
+  (on Mac: `~/Library/Application Support/Firefox/Profiles/<profile>/`).
+  Extracting the token in PowerShell, no jq needed:
 
   ```powershell
   (Get-Content "$env:APPDATA\Mozilla\Firefox\Profiles\xxxx.default-release\signedInUser.json" |
     ConvertFrom-Json).accountData.sessionToken
   ```
 
-- توقف برنامه با Ctrl+C است (`SIGTERM` در ویندوز وجود ندارد).
-- گوش دادن روی `127.0.0.1` معمولاً Windows Firewall را درگیر نمی‌کند؛ ولی اگر
-  با `--socks 0.0.0.0:PORT` روی همهٔ اینترفیس‌ها گوش دهید، احتمالاً یک بار
-  پرامپت فایروال می‌بینید.
+- Stop the program with Ctrl+C (`SIGTERM` does not exist on Windows).
+- Listening on `127.0.0.1` usually does not trigger Windows Firewall; but if
+  you listen on all interfaces with `--socks 0.0.0.0:PORT`, you will likely
+  see a firewall prompt once.
 
-## اجرا
 
-تنها راه احراز هویت پاس دادن `sessionToken` حساب Firefox Account است — رشتهٔ
-۶۴ کاراکتری هگز که فایرفاکس به‌صورت متن ساده در `signedInUser.json` پروفایلِ
-فعال ذخیره می‌کند (فیلد `accountData.sessionToken`). آن را استخراج کنید:
+## Running
+
+The only authentication method is passing the Firefox Account `sessionToken` —
+a 64-character hex string that Firefox stores in plain text in the active
+profile's `signedInUser.json` (the `accountData.sessionToken` field). Extract
+it:
 
 ```sh
 jq -r '.accountData.sessionToken' ~/.mozilla/firefox/xxxxxxxx.default-release/signedInUser.json
 ```
 
-و به برنامه بدهید:
+and pass it to the program:
 
 ```sh
 ./ffvpn --session-token <64 hex>
 ```
 
-پورت گوش دادن پیش‌فرض `127.0.0.1:1080` است؛ برای تغییر:
+The default listening port is `127.0.0.1:1080`; to change it:
 
 ```sh
 ./ffvpn --session-token <64 hex> --socks 127.0.0.1:2080
 ```
 
-یا پروکسی HTTP CONNECT به‌جای SOCKS5 — دادن `--http` به‌تنهایی، پیش‌فرض
-SOCKS را غیرفعال می‌کند (هر دو با هم = هر دو):
+Or a HTTP CONNECT proxy instead of SOCKS5 — passing `--http` alone disables
+the SOCKS default (passing both = both):
 
 ```sh
 ./ffvpn --session-token <64 hex> --http 127.0.0.1:9088
 ```
 
-بدون `--session-token` (و مگر با `--email`) برنامه اجرا نمی‌شود.
+Without `--session-token` (and unless `--email` is given) the program refuses
+to start.
 
-> ⚠️ **ورود با ایمیل/پسورد (`--email`) معمولاً کار نمی‌کند**: لبه‌ی
-> api.accounts.firefox.com درخواست‌های `/account/login` کلاینت‌های
-> غیرمرورگر را با HTTP 406 بلاک می‌کند (تأییدشده با تست زنده؛ با هر
-> User-Agent‌ای، حتی curl و PyFxA). اگر خطای `fxa: HTTP 406` دیدید یعنی به
-> این فیلتر خورده‌اید؛ از `--session-token` استفاده کنید. بقیه‌ی زنجیره
-> (session/status، OAuth، Guardian) بدون مشکل از Go کار می‌کنند.
+> ⚠️ **Email/password login (`--email`) usually does not work**: the
+> api.accounts.firefox.com edge blocks `/account/login` requests from
+> non-browser clients with HTTP 406 (confirmed with live testing; with any
+> User-Agent, including curl and PyFxA). If you see `fxa: HTTP 406` you have
+> hit this filter; use `--session-token`. The rest of the chain
+> (session/status, OAuth, Guardian) works fine from Go.
 
-خروجی موفق باید چیزی شبیه این باشد:
+Successful output should look something like:
 
 ```
 FxA session OK (uid 6b2f21a9...)
@@ -137,27 +141,28 @@ Proxy pass valid until 2026-10-06T18:44:12Z
 SOCKS5 proxy listening on 127.0.0.1:1080
 ```
 
-سپس هر برنامه‌ای را به `socks5://127.0.0.1:1080` وصل کنید (مثلاً curl):
+Then point any application at `socks5://127.0.0.1:1080` (curl, for example):
 
 ```sh
 curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
 ```
 
-> 💡 مسیر پوشهٔ پروفایل فعال فایرفاکس (برای پیدا کردن `signedInUser.json` و
-> استخراج توکن) را می‌توانید در `about:profiles` (ریشهٔ «Default Profile»)
-> ببینید. اگر لاگین نباید، اول در خود فایرفاکس وارد حساب شوید تا
-> `signedInUser.json` ساخته شود.
+> 💡 The path to the active Firefox profile directory (to find
+> `signedInUser.json` and extract the token) can be seen in
+> `about:profiles` (the root of the "Default Profile"). If you are not signed
+> in, sign in to your account in Firefox first so that `signedInUser.json`
+> gets created.
 
-### مشاهدهٔ مصرف سهمیه (بدون اجرای پروکسی)
+### Viewing quota usage (without running the proxy)
 
-برای اینکه فقط ببینید چقدر از سهمیهٔ پهنای باند مصرف شده — بدون بالا آمدن
-پروکسی محلی:
+To just see how much of the bandwidth quota has been used — without bringing
+up the local proxy:
 
 ```sh
 ./ffvpn --usage --session-token <64 hex>
 ```
 
-خروجی:
+Output:
 
 ```
 FxA session OK (uid 6b2f21a9...)
@@ -165,26 +170,27 @@ Entitlement: subscribed=true uid=123 maxBytes=... limitedBandwidth=true
 Bandwidth: 1.8 GiB of 10.0 GiB used (18%), 8.2 GiB left resets 2026-11-01
 ```
 
-این اطلاعات از هدرهای `X-Quota-*` پاسخ Guardian می‌آید (همان هدرهایی که خود
-فایرفاکس هم می‌خواند)؛ تاریخ «resets» مُدِ ریست شدن سهمیهٔ ماهانه است.
+This data comes from the `X-Quota-*` headers of the Guardian response (the
+same headers Firefox itself reads); the "resets" date is when the monthly
+quota resets.
 
-### فهرست کشورهای خروجی
+### Listing exit countries
 
-لیست سرورها از یک کالکشن عمومی Remote Settings می‌آید؛ برای دیدن کشورهای
-موجود نیازی به توکن و احراز هویت نیست:
+The server list comes from a public Remote Settings collection; no token or
+authentication is needed to see the available countries:
 
 ```sh
 ./ffvpn --list-countries
 ```
 
-فقط کشورهای بدون قفل premium (همان‌هایی که فایرفاکس به کاربران رایگان نشان
-می‌دهد):
+Only countries without the premium lock (the ones Firefox shows to free
+users):
 
 ```sh
 ./ffvpn --list-countries --free-only
 ```
 
-خروجی:
+Output:
 
 ```
 Available exit countries (select with --country CODE):
@@ -192,77 +198,80 @@ Available exit countries (select with --country CODE):
   CA   Canada               2 servers, 1 city
 ```
 
-سپس کشور خروجی را با `--country CODE` انتخاب کنید (پیش‌فرض: anycast
-پیشنهادی سمت سرور). تعداد سرورها فقط موارد غیرقرنطینه را می‌شمارد؛ کشوری
-که «0 servers» نشان می‌دهد قابل انتخاب نیست و اگر کد نامعتبری بدهید، فهرست
-کدهای مجاز در پیام خطا می‌آید.
+Then select the exit country with `--country CODE` (default: the server-side
+anycast suggestion). The server count only includes non-quarantined servers; a
+country showing "0 servers" cannot be selected, and if you pass an invalid
+code the error message lists the allowed codes.
 
-دربارهٔ پرچم `(locked)`: این فیلد از خود داده‌های لیست سرور می‌آید و در سورس
-فایرفاکس چنین توضیح داده شده: «این کشور پشت مجموعه‌ای از پیش‌شرط‌ها قفل
-است». پنل فایرفاکس کشورهای locked را فقط به کاربران premium نشان می‌دهد —
-premium یعنی اشتراک Mozilla VPN دارد، یا پهنای باندش نامحدود است، یا
-فایرفاکس مرورگر پیش‌فرض سیستم است — و برای بقیه، این کشورها را از فهرست
-انتخاب حذف می‌کند. هستهٔ پروکسی فایرفاکس (`getLocation`) این پرچم را هنگام
-انتخاب سرور چک نمی‌کند؛ ffvpn هم فقط نمایشش می‌دهد و سمت کلاینت چیزی را
-بلاک نمی‌کند — حرف آخر را لبهٔ سرور می‌زند.
+About the `(locked)` flag: this field comes from the server list data itself
+and is described in the Firefox source as "this country is locked behind a set
+of preconditions." The Firefox panel only shows locked countries to premium
+users — premium means having a Mozilla VPN subscription, or unlimited
+bandwidth, or Firefox being the system default browser — and hides these
+countries from the selection list for everyone else. Firefox's own proxy core
+(`getLocation`) does not check this flag when selecting a server; ffvpn only
+displays it and blocks nothing client-side — the edge has the final say.
 
-### فلگ‌های مهم
+### Key flags
 
-| فلگ | توضیح |
+| Flag | Description |
 |---|---|
-| `--session-token HEX` | توکن نشست FxA — از `signedInUser.json` پروفایل فایرفاکس (بالا را ببینید) |
-| `--email` / `--password` | ورود تعاملی — معمولاً با فیلتر لبه‌ای 406 مواجه می‌شود (بالا را ببینید) |
-| `--socks HOST:PORT` | آدرس پروکسی SOCKS5 محلی (پیش‌فرض `127.0.0.1:1080`؛ رشتهٔ خالی = غیرفعال) |
-| `--http HOST:PORT` | پروکسی HTTP CONNECT محلی (پیش‌فرض غیرفعال؛ دادن تنها آن، پیش‌فرض SOCKS را غیرفعال می‌کند) |
-| `--usage` | فقط نمایش مصرف سهمیه و خروج؛ پروکسی محلی بالا نمی‌آید |
-| `--country XX` | انتخاب کشور خروجی (پیش‌فرض: anycast پیشنهادی؛ فهرست: `--list-countries`) |
-| `--server HOST:PORT` | رد شدن از لیست سرور و اتصال به یک لبه مشخص |
-| `--dial-proxy socks5://[user:pass@]H:P` | رسیدن به لبه از طریق یک SOCKS5 دیگر (پروکسی بوت‌استرپ؛ با نام کاربر/گذرواژهٔ اختیاری RFC 1929) |
-| `--sni NAME` | نام SNI ارسالی در ClientHello به لبه (پیش‌فرض: نام دامنهٔ لبه). گواهی لبه همچنان بر اساس نام واقعی لبه اعتبارسنجی می‌شود، نه NAME |
-| `--guardian URL` | تغییر سرور Guardian (برای تست) |
-| `--list-countries` | فقط نمایش کشورهای خروجی و خروج؛ بدون نیاز به احراز هویت |
-| `--free-only` | همراه با `--list-countries`: حذف کشورهای قفل‌شدهٔ premium |
-| `--verbose` | لاگ پرجزئیات |
+| `--session-token HEX` | FxA session token — from the Firefox profile's `signedInUser.json` (see above) |
+| `--email` / `--password` | Interactive login — usually hits the 406 edge filter (see above) |
+| `--socks HOST:PORT` | Local SOCKS5 proxy address (default `127.0.0.1:1080`; empty string = disabled) |
+| `--http HOST:PORT` | Local HTTP CONNECT proxy (default disabled; passing it alone disables the SOCKS default) |
+| `--usage` | Just show quota usage and exit; the local proxy does not start |
+| `--country XX` | Select the exit country (default: server-side anycast suggestion; list: `--list-countries`) |
+| `--server HOST:PORT` | Bypass the server list and connect to a specific edge |
+| `--dial-proxy socks5://[user:pass@]H:P` | Reach the edge through another SOCKS5 proxy (bootstrap proxy; optional RFC 1929 user/pass) |
+| `--sni NAME` | SNI name sent in the ClientHello to the edge (default: the edge's domain name). The edge certificate is still validated against the edge's real name, not NAME |
+| `--guardian URL` | Override the Guardian server (for testing) |
+| `--list-countries` | Just show exit countries and exit; no authentication needed |
+| `--free-only` | With `--list-countries`: hide premium-locked countries |
+| `--verbose` | Verbose logging |
 
-## هشدار امنیتی
+## Security notes
 
-- `sessionToken` معادل «کلید حساب» است: هرکس آن را داشته باشد می‌تواند به نام
-  شما توکن OAuth بسازد. آن را به هیچ‌جا نفرستید و بعد از استفاده، با
-  خروج/ورود مجدد در فایرفاکس می‌توانید نشست‌ها را بازنشانی کنید.
-- ترافیک شما از لبه‌ی Fastly/Mozilla عبور می‌کند؛ مشابه خود فایرفاکس، مقصد
-  (hostname) در درخواست CONNECT برای لبه قابل مشاهده است ولی برای ISP محلی فقط
-  یک TLS به `*.fastly-masque.net` دیده می‌شود.
+- The `sessionToken` is equivalent to an "account key": anyone who has it can
+  obtain OAuth tokens in your name. Never send it anywhere, and after use you
+  can reset sessions by signing out/in in Firefox.
+- Your traffic passes through the Fastly/Mozilla edge; like Firefox itself,
+  the destination (hostname) is visible to the edge in the CONNECT request,
+  but your local ISP only sees a TLS connection to `*.fastly-masque.net`.
 
-## تست‌ها
+## Tests
 
 ```sh
-go test ./...                                   # تست کامل با سرورهای جعلی
-FFVPN_LIVE_TEST=1 go test -run TestLiveFetch -v ./internal/servers/   # دریافت زندهٔ لیست سرورها
+go test ./...                                   # full suite with mock servers
+FFVPN_LIVE_TEST=1 go test -run TestLiveFetch -v ./internal/servers/   # live server list fetch
 ```
 
-پوشش تست:
+Test coverage:
 
-- رمزنگاری FxA (quickStretch v1/v2، authPW، مشتق Bearer session) در برابر
-  وکتورهای مستقل تولیدشده با Python + وکتورهای RFC 5869 و RFC 7914
-- جریان کامل OAuth (PKCE) و ورود/TOTP در برابر سرور جعلی FxA
-- کلاینت Guardian (activate/token/خطاهای 401/403/429/451 و هدرهای سهمیه)
-- تجزیهٔ لیست سرور (پیش‌فرض connect، قرنطینه، پروتکل صریح) + تست زنده
-- تونل (TLS + CONNECT + Bearer) و پروکسی‌های محلی + چرخش توکن در تست
-  انتها-به-انتهای کل باینری + حالت `--usage`
+- FxA crypto (quickStretch v1/v2, authPW, Bearer session derivation) against
+  independently generated vectors (Python) plus RFC 5869 and RFC 7914 vectors
+- The full OAuth flow (PKCE) and login/TOTP against a mock FxA server
+- The Guardian client (activate/token/401/403/429/451 errors and quota headers)
+- Server list parsing (default connect, quarantine, explicit protocol) + a
+  live test
+- The tunnel (TLS + CONNECT + Bearer) and local proxies + token rotation in an
+  end-to-end test of the whole binary + `--usage` mode
 
-آنچه اینجا قابل تست نیست: پاسخ‌های واقعی FxA/Guardian با حساب پریمیوم
-(اشتراک/منطقه). منطق هر دو دقیقاً از سورس فایرفاکس برداشت شده است.
+What cannot be tested here: real FxA/Guardian responses with a premium
+account (subscription/region). The logic of both is taken exactly from the
+Firefox source.
 
-## ساختار کد
+## Code layout
 
 ```
-main.go                     اتصال همه اجزا، چرخش توکن، فلگ‌ها
-internal/fxa/               ورود FxA (v1/v2)، TOTP، مشتق کلیدها، OAuth/PKCE
-internal/guardian/          کلاینت Guardian و ProxyPass/Usage
-internal/servers/           لیست سرورها از Remote Settings
-internal/tunnel/            TLS + CONNECT با Bearer؛ dialer اختیاری socks5
-internal/localproxy/        سرور SOCKS5 (RFC 1928) و HTTP CONNECT محلی
+main.go                     wiring everything together, token rotation, flags
+internal/fxa/               FxA login (v1/v2), TOTP, key derivation, OAuth/PKCE
+internal/guardian/          Guardian client and ProxyPass/Usage
+internal/servers/           server list from Remote Settings
+internal/tunnel/            TLS + CONNECT with Bearer; optional socks5 dialer
+internal/localproxy/        local SOCKS5 (RFC 1928) and HTTP CONNECT servers
 ```
 
-مرجع پیاده‌سازی: ماژول‌های `toolkit/components/ipprotection/` در سورس
-فایرفاکس و کتابخانهٔ مرجع PyFxA (جریان Bearer بدون Hawk مطابق ADR-0022).
+Implementation reference: the `toolkit/components/ipprotection/` modules in
+the Firefox source and the reference PyFxA library (the Bearer flow without
+Hawk per ADR-0022).

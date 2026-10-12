@@ -1,4 +1,4 @@
-[English](README.en.md) | [فارسی](README.md) | **Русский**
+[English](README.md) | [فارسی](README.fa.md) | **Русский**
 
 # ffvpn — Go-клиент встроенного VPN Firefox
 
