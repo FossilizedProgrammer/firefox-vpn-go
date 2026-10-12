@@ -1,0 +1,11 @@
+# Binaries
+ffvpn
+ffvpn.exe
+
+# Test artifacts / coverage
+*.out
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
