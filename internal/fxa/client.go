@@ -90,6 +90,14 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// solveChallenge earns the anti-bot cookie for this client's API origin and
+// puts it in the client's jar; the 406 retry loop in call uses it.
+func (c *Client) solveChallenge() error {
+	c.challengeMu.Lock()
+	defer c.challengeMu.Unlock()
+	return solveChallenge(c.HTTP.Transport, c.jar, originOf(c.BaseURL), c.Logf)
+}
+
 const firefoxMajor = "158"
 
 // firefoxUserAgent is desktop Firefox's User-Agent. Fastly's bot check in

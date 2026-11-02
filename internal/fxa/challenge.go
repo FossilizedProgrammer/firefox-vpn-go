@@ -85,21 +85,26 @@ type fastlyPostBackResponse struct {
 	Tok    string            `json:"tok"`
 }
 
-// solveChallenge earns the anti-bot cookie and puts it in the client's jar so
-// the next API request passes the edge. Each host is solved with a throw-away
-// client holding a fresh jar: a client that already has a valid cookie is
-// served the real page instead of the challenge, which would leave nothing to
-// solve.
-func (c *Client) solveChallenge() error {
-	c.challengeMu.Lock()
-	defer c.challengeMu.Unlock()
+// solveChallenge earns the anti-bot cookie and puts it in jar so the next API
+// request passes the edge. It is shared by the auth and the OAuth client, each
+// of which holds its own jar. Each host is solved with a throw-away client
+// holding a fresh jar: a client that already has a valid cookie is served the
+// real page instead of the challenge, which would leave nothing to solve.
+func solveChallenge(transport http.RoundTripper, jar *cookiejar.Jar, apiOrigin string, logf func(format string, args ...any)) error {
+	solverLogf := func(format string, args ...any) {
+		if logf != nil {
+			logf(format, args...)
+			return
+		}
+		log.Printf(format, args...)
+	}
 
 	var lastErr error
-	for _, base := range []string{c.origin(), fastlySiteBase} {
+	for _, base := range []string{apiOrigin, fastlySiteBase} {
 		if base == "" {
 			continue
 		}
-		err := c.solveOnHost(base)
+		err := solveOnHost(transport, jar, apiOrigin, base, solverLogf)
 		if err == nil {
 			return nil
 		}
@@ -111,22 +116,22 @@ func (c *Client) solveChallenge() error {
 	return lastErr
 }
 
-// origin is the scheme://host part of BaseURL, which is what the edge and the
-// challenge page are fetched from.
-func (c *Client) origin() string {
-	u, err := url.Parse(c.BaseURL)
+// originOf is the scheme://host part of a base URL, which is what the edge and
+// the challenge page are fetched from.
+func originOf(baseURL string) string {
+	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host
 }
 
-func (c *Client) solveOnHost(base string) error {
-	jar, err := cookiejar.New(nil)
+func solveOnHost(transport http.RoundTripper, jar *cookiejar.Jar, apiOrigin, base string, logf func(format string, args ...any)) error {
+	solveJar, err := cookiejar.New(nil)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Transport: c.HTTP.Transport, Jar: jar, Timeout: challengeTimeout}
+	client := &http.Client{Transport: transport, Jar: solveJar, Timeout: challengeTimeout}
 	pageURL := base + "/"
 
 	page, isChallenge, err := fetchChallengePage(client, pageURL)
@@ -177,10 +182,10 @@ func (c *Client) solveOnHost(base string) error {
 			if stillChallenged {
 				return errors.New("challenge cookie not accepted on this exit IP")
 			}
-			if err := c.installChallengeCookies(jar, pageURL); err != nil {
+			if err := installChallengeCookies(jar, solveJar, pageURL, apiOrigin); err != nil {
 				return err
 			}
-			c.logf("Fastly challenge solved host=%s challenges=%s rounds=%d",
+			logf("Fastly challenge solved host=%s challenges=%s rounds=%d",
 				strings.TrimPrefix(base, "https://"), strings.Join(kinds, ","), round+1)
 			return nil
 		}
@@ -393,27 +398,27 @@ func clientMetricsAnswer() map[string]any {
 	}
 }
 
-// installChallengeCookies copies the earned cookies into the client's jar for
-// both the API host and the site host, so the retry carries them wherever the
-// edge looks for them.
-func (c *Client) installChallengeCookies(jar *cookiejar.Jar, pageURL string) error {
+// installChallengeCookies copies the cookies the solver earned (src) into the
+// API client's jar (dst) for both the API host and the site host, so the retry
+// carries them wherever the edge looks for them.
+func installChallengeCookies(dst, src *cookiejar.Jar, pageURL, apiOrigin string) error {
 	parsed, err := url.Parse(pageURL)
 	if err != nil {
 		return err
 	}
-	cookies := jar.Cookies(parsed)
+	cookies := src.Cookies(parsed)
 	if len(cookies) == 0 {
 		return errors.New("challenge completed but no cookies were issued")
 	}
-	if c.jar == nil {
-		return errors.New("client has no cookie jar for the challenge answer")
-	}
-	for _, raw := range []string{c.origin(), fastlySiteBase} {
+	for _, raw := range []string{apiOrigin, fastlySiteBase} {
+		if raw == "" {
+			continue
+		}
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
 			continue
 		}
-		c.jar.SetCookies(u, cookies)
+		dst.SetCookies(u, cookies)
 	}
 	return nil
 }
@@ -433,12 +438,4 @@ func snippet(b []byte) string {
 		return s[:200] + "..."
 	}
 	return s
-}
-
-func (c *Client) logf(format string, args ...any) {
-	if c.Logf != nil {
-		c.Logf(format, args...)
-		return
-	}
-	log.Printf(format, args...)
 }

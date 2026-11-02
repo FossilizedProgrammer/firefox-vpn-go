@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,4 +50,27 @@ func TestLiveAuthServer(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Errno != ErrnoUnknownAccount {
 		t.Fatalf("login: expected errno %d through the solved challenge, got %v", ErrnoUnknownAccount, err)
 	}
+}
+
+// The OAuth server sits behind the same edge as the auth server, so POST
+// /oauth/authorization and POST /token are blocked for non-browser clients on
+// networks the edge flags. A made-up session token still has to REACH the
+// server (which then rejects it); a 406 would mean the challenge-solving
+// retry failed.
+func TestLiveOAuthServer(t *testing.T) {
+	if os.Getenv("FFVPN_LIVE_TEST") != "1" {
+		t.Skip("live test disabled; set FFVPN_LIVE_TEST=1")
+	}
+	c := NewOAuthClient("https://oauth.accounts.firefox.com/v1", "5882386c6d801776")
+	c.Logf = t.Logf
+	c.HTTP.Timeout = 20 * time.Second
+
+	_, err := c.TokenForSession(&Session{Token: strings.Repeat("ab", 32), Verified: true}, []string{"profile"})
+	if err == nil {
+		t.Fatal("oauth: expected invalid-session failure")
+	}
+	if strings.Contains(err.Error(), "HTTP 406") {
+		t.Fatalf("oauth: Fastly challenge did not clear the edge: %v", err)
+	}
+	t.Logf("oauth reached the server and rejected the fake session: %v", err)
 }

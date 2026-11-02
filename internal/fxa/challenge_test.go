@@ -40,6 +40,26 @@ func fakeEdge(t *testing.T, blocked *atomic.Int32) *httptest.Server {
 			"verified":     true,
 		})
 	})
+	mux.HandleFunc("/oauth/authorization", func(w http.ResponseWriter, r *http.Request) {
+		if cookie, err := r.Cookie(fakeCookie); err != nil || cookie.Value != "granted" {
+			blocked.Add(1)
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode(map[string]any{
+			"redirect": "https://redirect.example/oauth/success?code=fake-code&state=" + body["state"],
+		})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if cookie, err := r.Cookie(fakeCookie); err != nil || cookie.Value != "granted" {
+			blocked.Add(1)
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "fake-oat"})
+	})
 	mux.HandleFunc(fakePrefix+"/script.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
 		w.Write([]byte(`(function(){init([{"ty":"pow","data":{"base":"` + fakePowBase +
@@ -104,6 +124,32 @@ func TestCallSolvesChallengeAndRetries(t *testing.T) {
 	}
 	if session.Token != fakeSessionToken {
 		t.Fatalf("login returned session %+v", session)
+	}
+	if got := blocked.Load(); got != 1 {
+		t.Errorf("edge blocked %d requests, want one before the challenge was solved", got)
+	}
+}
+
+// The OAuth server sits behind the same edge, so its POSTs are blocked the
+// same way; the OAuth client carries its own jar and 406 retry loop.
+func TestOAuthSolvesChallengeAndRetries(t *testing.T) {
+	var blocked atomic.Int32
+	srv := fakeEdge(t, &blocked)
+	defer srv.Close()
+
+	restoreSite := fastlySiteBase
+	fastlySiteBase = srv.URL
+	t.Cleanup(func() { fastlySiteBase = restoreSite })
+
+	c := NewOAuthClient(srv.URL, "5882386c6d801776")
+	c.Logf = func(string, ...any) {}
+
+	access, err := c.TokenForSession(&Session{Token: fakeSessionToken, Verified: true}, []string{"profile"})
+	if err != nil {
+		t.Fatalf("token through the fake edge: %v", err)
+	}
+	if access != "fake-oat" {
+		t.Fatalf("token exchange returned %q", access)
 	}
 	if got := blocked.Load(); got != 1 {
 		t.Errorf("edge blocked %d requests, want one before the challenge was solved", got)
