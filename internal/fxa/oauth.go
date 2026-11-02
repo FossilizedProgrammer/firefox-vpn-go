@@ -121,7 +121,7 @@ func (c *OAuthClient) post(path string, body map[string]any, authHeader string) 
 	req.Header.Set("Content-Type", "application/json")
 	// The FxA servers answer 406 Not Acceptable without this header.
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ffvpn/0.1 (Firefox VPN proxy client)")
+	req.Header.Set("User-Agent", firefoxUserAgent())
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}

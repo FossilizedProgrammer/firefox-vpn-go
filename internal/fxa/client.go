@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -65,67 +68,86 @@ type Session struct {
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+
+	// Logf receives progress lines (solving a challenge takes seconds); nil
+	// writes to the standard logger.
+	Logf func(format string, args ...any)
+
+	// jar holds the anti-bot cookie earned from Fastly; HTTP uses it.
+	jar *cookiejar.Jar
+	// challengeMu serializes solvers, which would otherwise race on jar.
+	challengeMu sync.Mutex
 }
 
 func NewClient(baseURL string) *Client {
+	// A jar is what carries the challenge answer; if one cannot be created
+	// the client still works for the endpoints the edge does not block.
+	jar, _ := cookiejar.New(nil)
 	return &Client{
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP:    &http.Client{Timeout: 30 * time.Second, Jar: jar},
+		jar:     jar,
 	}
 }
 
+const firefoxMajor = "158"
+
+// firefoxUserAgent is desktop Firefox's User-Agent. Fastly's bot check in
+// front of the auth server treats a client that does not look like a browser
+// as one to challenge.
+func firefoxUserAgent() string {
+	platform := "X11; Linux x86_64"
+	switch runtime.GOOS {
+	case "windows", "android":
+		// Firefox's built-in VPN is a desktop feature, so Android uses the
+		// most common desktop fingerprint.
+		platform = "Windows NT 10.0; Win64; x64"
+	case "darwin":
+		platform = "Macintosh; Intel Mac OS X 10.15"
+	case "linux":
+		if runtime.GOARCH == "arm64" {
+			platform = "X11; Linux aarch64"
+		}
+	}
+	return fmt.Sprintf("Mozilla/5.0 (%s; rv:%s.0) Gecko/20100101 Firefox/%s.0", platform, firefoxMajor, firefoxMajor)
+}
+
 // call performs an API request; auth is a full Authorization header value or "".
+// The Fastly edge blocks non-browser clients with a bare HTTP 406 that carries
+// no FxA error payload; that answer is cleared by a cookie, so a blocked
+// request solves the challenge and is retried instead of failing.
 func (c *Client) call(method, path string, body any, authHeader string, out any) error {
-	var reader io.Reader
+	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(b)
+		payload = b
 	}
-	req, err := http.NewRequest(method, c.BaseURL+path, reader)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	// The FxA auth server answers 406 Not Acceptable without this header.
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ffvpn/0.1 (Firefox VPN proxy client)")
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("fxa: request to %s failed: %w", path, err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 400 || resp.StatusCode < 200 {
-		apiErr := &APIError{Status: resp.StatusCode}
-		if jsonErr := json.Unmarshal(data, apiErr); jsonErr != nil {
-			// Non-JSON error bodies (framework/WAF responses): keep a
-			// short snippet so failures stay diagnosable.
-			snippet := strings.TrimSpace(string(data))
-			if len(snippet) > 120 {
-				snippet = snippet[:120]
-			}
-			apiErr.Message = snippet
-		} else if apiErr.Message == "" {
-			// hapi-style errors use "error" for the reason phrase.
-			var hapi struct {
-				ErrorName string `json:"error"`
-			}
-			if json.Unmarshal(data, &hapi) == nil {
-				apiErr.Message = hapi.ErrorName
-			}
+
+	var status int
+	var data []byte
+	for attempt := 1; ; attempt++ {
+		var err error
+		status, data, err = c.send(method, path, payload, authHeader)
+		if err != nil {
+			return err
 		}
-		return apiErr
+		if status != http.StatusNotAcceptable {
+			break
+		}
+		if c.jar == nil || attempt > maxChallengeAttempts {
+			return &APIError{Status: status, Message: fmt.Sprintf(
+				"Fastly anti-bot challenge not cleared after %d attempts", attempt)}
+		}
+		if err := c.solveChallenge(); err != nil {
+			return &APIError{Status: status, Message: fmt.Sprintf("Fastly anti-bot challenge: %v", err)}
+		}
+	}
+
+	if status >= 400 || status < 200 {
+		return apiError(status, data)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
@@ -133,6 +155,56 @@ func (c *Client) call(method, path string, body any, authHeader string, out any)
 		}
 	}
 	return nil
+}
+
+// send performs one request and returns its status and body. The payload is
+// re-readable because a blocked request is sent again after the challenge.
+func (c *Client) send(method, path string, payload []byte, authHeader string) (int, []byte, error) {
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequest(method, c.BaseURL+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	// The FxA auth server answers 406 Not Acceptable without this header.
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", firefoxUserAgent())
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("fxa: request to %s failed: %w", path, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, data, nil
+}
+
+// apiError turns a non-2xx response into an APIError, keeping a snippet of
+// non-JSON bodies (framework/WAF responses) so failures stay diagnosable.
+func apiError(status int, data []byte) *APIError {
+	apiErr := &APIError{Status: status}
+	if jsonErr := json.Unmarshal(data, apiErr); jsonErr != nil {
+		apiErr.Message = snippet(data)
+	} else if apiErr.Message == "" {
+		// hapi-style errors use "error" for the reason phrase.
+		var hapi struct {
+			ErrorName string `json:"error"`
+		}
+		if json.Unmarshal(data, &hapi) == nil {
+			apiErr.Message = hapi.ErrorName
+		}
+	}
+	return apiErr
 }
 
 // credentialsStatus reports which key-stretch version an account uses.

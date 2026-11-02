@@ -40,25 +40,26 @@ const (
 )
 
 type options struct {
-	sessionToken   string
-	email          string
-	password       string
-	unblockCode    string
-	clientID       string
-	authServer     string
-	oauthServer    string
-	guardianURL    string
-	remoteSettings string
-	socksAddr      string
-	httpAddr       string
-	country        string
-	serverOverride string
-	dialProxy      string
-	sni            string
-	usageOnly      bool
-	listCountries  bool
-	freeOnly       bool
-	verbose        bool
+	sessionToken     string
+	email            string
+	password         string
+	unblockCode      string
+	clientID         string
+	authServer       string
+	oauthServer      string
+	guardianURL      string
+	remoteSettings   string
+	socksAddr        string
+	httpAddr         string
+	country          string
+	serverOverride   string
+	dialProxy        string
+	sni              string
+	sessionTokenFile string
+	usageOnly        bool
+	listCountries    bool
+	freeOnly         bool
+	verbose          bool
 	// insecureSkipVerify is a test hook for self-signed lab edges; it is
 	// intentionally not exposed as a CLI flag.
 	insecureSkipVerify bool
@@ -82,6 +83,7 @@ func main() {
 	flag.StringVar(&opts.serverOverride, "server", "", "proxy edge override as host:port (skips server list)")
 	flag.StringVar(&opts.dialProxy, "dial-proxy", "", "reach the edge via socks5://[user:pass@]host:port (bootstrap proxy)")
 	flag.StringVar(&opts.sni, "sni", "", "TLS SNI sent to the proxy edge (default: the edge hostname; verified against the edge hostname)")
+	flag.StringVar(&opts.sessionTokenFile, "session-token-file", "", "write the validated session token to this path (0600) so it can be reused without signing in again")
 	flag.BoolVar(&opts.usageOnly, "usage", false, "print bandwidth quota usage and exit (no proxy listeners)")
 	flag.BoolVar(&opts.listCountries, "list-countries", false, "print available exit countries and exit (no auth needed)")
 	flag.BoolVar(&opts.freeOnly, "free-only", false, "with --list-countries, hide premium-locked countries")
@@ -146,6 +148,14 @@ func run(ctx context.Context, opts *options) error {
 		uidPrefix = uidPrefix[:8]
 	}
 	log.Printf("FxA session OK (uid %s...)", uidPrefix)
+
+	if opts.sessionTokenFile != "" {
+		// A session token is the account key, so it is written 0600 and only
+		// after the auth server has accepted it.
+		if err := os.WriteFile(opts.sessionTokenFile, []byte(session.Token), 0o600); err != nil {
+			return fmt.Errorf("writing --session-token-file: %w", err)
+		}
+	}
 
 	oauthClient := fxa.NewOAuthClient(opts.oauthServer, opts.clientID)
 	getOAuthToken := func() (string, error) {
@@ -456,8 +466,8 @@ func interactiveLogin(opts *options) (*fxa.Session, error) {
 	if err != nil {
 		var apiErr *fxa.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 406 {
-			return nil, fmt.Errorf("Mozilla's edge protection rejects non-browser clients on /account/login (HTTP 406). " +
-				"Sign in to your Firefox Account inside Firefox, then pass its sessionToken (from signedInUser.json, see README) via --session-token instead")
+			return nil, fmt.Errorf("Mozilla's edge protection still rejects this sign-in (HTTP 406): %v. "+
+				"Sign in to your Firefox Account inside Firefox, then pass its sessionToken (from signedInUser.json, see README) via --session-token instead", apiErr)
 		}
 		if fxa.IsErrno(err, fxa.ErrnoUnblockRequired) {
 			return nil, fmt.Errorf("login blocked by FxA: request an unblock code via email and retry with --unblock-code")
