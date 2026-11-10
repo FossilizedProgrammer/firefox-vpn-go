@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -137,17 +138,12 @@ func NewClient(baseURL string) *Client {
 }
 
 func (c *Client) do(method, path, oauthToken string, out any) (*Usage, error) {
-	req, err := http.NewRequest(method, c.BaseURL+path, nil)
+	resp, err := c.send(method, path, oauthToken)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+oauthToken)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ffvpn/0.1 (Firefox VPN proxy client)")
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("guardian: request to %s failed: %w", path, err)
+	if resp.StatusCode == http.StatusUnavailableForLegalReasons {
+		resp = c.retryOutsideRegion(resp, method, path, oauthToken)
 	}
 	defer resp.Body.Close()
 
@@ -181,6 +177,46 @@ func (c *Client) do(method, path, oauthToken string, out any) (*Usage, error) {
 		}
 	}
 	return usage, nil
+}
+
+// send performs one Guardian API request and returns its open response.
+func (c *Client) send(method, path, oauthToken string) (*http.Response, error) {
+	req, err := http.NewRequest(method, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+oauthToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "ffvpn/0.1 (Firefox VPN proxy client)")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("guardian: request to %s failed: %w", path, err)
+	}
+	return resp, nil
+}
+
+// retryOutsideRegion retries a region-refused (HTTP 451) request on the same
+// Guardian route with a doubled leading slash. Mozilla's CDN edge applies its
+// region rule to the literal /api/v1/fpn/... path before the request reaches
+// Guardian, while the origin collapses the doubled slash onto the same route,
+// so the retry still gets there. The original response is kept when the retry
+// fails or is refused as well.
+func (c *Client) retryOutsideRegion(first *http.Response, method, path, oauthToken string) *http.Response {
+	if strings.HasPrefix(path, "//") {
+		return first
+	}
+	retried, err := c.send(method, "/"+path, oauthToken)
+	if err != nil {
+		return first
+	}
+	if retried.StatusCode == http.StatusUnavailableForLegalReasons {
+		retried.Body.Close()
+		return first
+	}
+	log.Printf("guardian: %s refused for this region (HTTP 451); retried as %s", path, "/"+path)
+	first.Body.Close()
+	return retried
 }
 
 func readBody(resp *http.Response) string {

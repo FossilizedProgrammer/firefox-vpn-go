@@ -46,6 +46,11 @@ Your app ──► local SOCKS5/HTTP proxy (127.0.0.1)
   - `GET  /api/v1/fpn/token` — retrieve a short-lived JWT (rotated 2 minutes
     before expiry)
   - `X-Quota-*` headers — bandwidth usage
+- **Region refusals**: when the CDN edge in front of Guardian refuses a
+  request for the region (`451`), ffvpn retries that request once on the same
+  Guardian route with a doubled leading slash (`//api/v1/fpn/...`). The edge's
+  region rule matches the literal path only, while the origin routes the
+  doubled one to the same Guardian handler, so the retry stays direct.
 - **Tunnel**: current records register no `protocols`, so per Firefox's own
   `IPPChannelFilter.sys.mjs` logic the default protocol is CONNECT over TLS
   and the hostname is resolved by the edge (equivalent to

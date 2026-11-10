@@ -127,6 +127,80 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
+// regionRefusalServer answers 451 for the literal Guardian paths and records
+// what the client asked for; the retry is meant to land on the doubled path.
+func regionRefusalServer(t *testing.T, paths *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*paths = append(*paths, r.Method+" "+r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "//") {
+			w.WriteHeader(http.StatusUnavailableForLegalReasons)
+			w.Write([]byte(`{"error":"unavailable_in_region"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"subscribed": true, "uid": 9, "maxBytes": "107374182400", "limited_bandwidth": false,
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRegionRefusalRetriesDoubledPath(t *testing.T) {
+	var paths []string
+	srv := regionRefusalServer(t, &paths)
+
+	ent, _, err := NewClient(srv.URL).Activate("OATK")
+	if err != nil {
+		t.Fatalf("activate after 451: %v", err)
+	}
+	if !ent.Subscribed || ent.UID != 9 {
+		t.Fatalf("unexpected entitlement: %+v", ent)
+	}
+	want := []string{"POST /api/v1/fpn/activate", "POST //api/v1/fpn/activate"}
+	if len(paths) != len(want) || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("requests = %v, want %v", paths, want)
+	}
+}
+
+func TestRegionRefusalKeptWhenRetryAlsoRefused(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusUnavailableForLegalReasons)
+		w.Write([]byte(`{"error":"unavailable_in_region"}`))
+	}))
+	defer srv.Close()
+
+	_, _, err := NewClient(srv.URL).ProxyPass("OATK")
+	var gerr *Error
+	if !errors.As(err, &gerr) || gerr.Kind != KindRegion {
+		t.Fatalf("want a region error, got %v", err)
+	}
+	if !strings.Contains(gerr.Body, "unavailable_in_region") {
+		t.Fatalf("original response body lost: %q", gerr.Body)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("retry ran %d times, want exactly one extra attempt: %v", len(paths), paths)
+	}
+}
+
+func TestNoExtraRequestWithoutRefusal(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{"subscribed": true, "uid": 1, "maxBytes": "1"})
+	}))
+	defer srv.Close()
+
+	if _, _, err := NewClient(srv.URL).Activate("OATK"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("activate made %d requests, want 1", calls)
+	}
+}
+
 func TestUsageHeaders(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Quota-Unlimited", "true")
